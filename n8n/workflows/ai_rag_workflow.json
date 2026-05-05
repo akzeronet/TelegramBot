@@ -1,0 +1,299 @@
+{
+  "name": "AI RAG Workflow (Long-Term Memory)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "chat",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "1",
+      "name": "Webhook PHP",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [100, 300],
+      "webhookId": "chat-webhook-id"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OMNIROUTE_API_URL }}/embeddings",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.OMNIROUTE_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "model",
+              "value": "text-embedding-3-small"
+            },
+            {
+              "name": "input",
+              "value": "={{ $('Webhook PHP').item.json.body.text }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "2",
+      "name": "Get Embedding",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [300, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT content FROM user_memories WHERE uid = $1 ORDER BY embedding <-> $2::vector LIMIT 5;",
+        "additionalFields": {
+          "queryParams": "={{ $('Webhook PHP').item.json.body.uid }}, {{ JSON.stringify($json.data[0].embedding) }}"
+        }
+      },
+      "id": "3",
+      "name": "Search pgvector",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.1,
+      "position": [500, 200],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-cred-id",
+          "name": "Postgres aiwrapper"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT role, content FROM chat_messages WHERE uid = $1 AND archived = FALSE ORDER BY created_at DESC LIMIT 15;",
+        "additionalFields": {
+          "queryParams": "={{ $('Webhook PHP').item.json.body.uid }}"
+        }
+      },
+      "id": "4",
+      "name": "Get Short Context",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.1,
+      "position": [500, 400],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-cred-id",
+          "name": "Postgres aiwrapper"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const memories = $('Search pgvector').all().map(item => item.json.content).join('\\n');\nconst persona = $('Webhook PHP').item.json.body.persona_prompt || 'Eres un asistente útil.';\nconst finalPrompt = `${persona}\\n\\nInformación recordada sobre el usuario:\\n${memories ? memories : 'No hay recuerdos.'}`;\nreturn [{ json: { finalPrompt } }];"
+      },
+      "id": "5",
+      "name": "Prompt Assembler",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [700, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OMNIROUTE_API_URL }}/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.OMNIROUTE_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "model",
+              "value": "={{ $('Webhook PHP').item.json.body.model }}"
+            },
+            {
+              "name": "messages",
+              "value": "={{ [{ role: 'system', content: $json.finalPrompt }].concat($('Get Short Context').all().map(msg => ({ role: msg.json.role, content: msg.json.content })).reverse()).concat([{ role: 'user', content: $('Webhook PHP').item.json.body.text }]) }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "6",
+      "name": "OmniRoute AI",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $('Webhook PHP').item.json.body.bot_id ? $env.TELEGRAM_BOT_TOKEN : $env.TELEGRAM_BOT_TOKEN }}/sendMessage",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "chat_id",
+              "value": "={{ $('Webhook PHP').item.json.body.chat_id }}"
+            },
+            {
+              "name": "text",
+              "value": "={{ $json.choices[0].message.content }}"
+            },
+            {
+              "name": "parse_mode",
+              "value": "Markdown"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "7",
+      "name": "Send Telegram",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1100, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://php:80/internal/close",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-N8N-Secret",
+              "value": "={{ $env.N8N_WEBHOOK_SECRET }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "uid",
+              "value": "={{ $('Webhook PHP').item.json.body.uid }}"
+            },
+            {
+              "name": "content",
+              "value": "={{ $('OmniRoute AI').item.json.choices[0].message.content }}"
+            },
+            {
+              "name": "tokens_used",
+              "value": "={{ $('OmniRoute AI').item.json.usage.total_tokens }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "8",
+      "name": "Close PHP",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1300, 300]
+    }
+  ],
+  "connections": {
+    "Webhook PHP": {
+      "main": [
+        [
+          {
+            "node": "Get Embedding",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Embedding": {
+      "main": [
+        [
+          {
+            "node": "Search pgvector",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Get Short Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search pgvector": {
+      "main": [
+        [
+          {
+            "node": "Prompt Assembler",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Short Context": {
+      "main": [
+        [
+          {
+            "node": "Prompt Assembler",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prompt Assembler": {
+      "main": [
+        [
+          {
+            "node": "OmniRoute AI",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OmniRoute AI": {
+      "main": [
+        [
+          {
+            "node": "Send Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Telegram": {
+      "main": [
+        [
+          {
+            "node": "Close PHP",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

@@ -1,0 +1,91 @@
+version: "3.9"
+
+# =============================================================================
+# AI Wrapper Premium — Configuración para EASYPANEL
+# Nota: Easypanel maneja el SSL y el Proxy. No necesitas el contenedor Nginx.
+# =============================================================================
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # MÓDULO A — PHP Slim (Backend & API)
+  # ---------------------------------------------------------------------------
+  php:
+    build: 
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: aiwrapper_php
+    restart: unless-stopped
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ${POSTGRES_DB}
+      DB_USER: ${POSTGRES_USER}
+      DB_PASS: ${POSTGRES_PASSWORD}
+      MASTER_KEY: ${MASTER_KEY}
+      JWT_SECRET: ${JWT_SECRET}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET}
+      N8N_WEBHOOK_URL: http://n8n:5678/webhook/chat
+      N8N_WEBHOOK_SECRET: ${N8N_WEBHOOK_SECRET}
+      APP_DOMAIN: ${APP_DOMAIN}
+      APP_ENV: production
+    # En Easypanel, vincula tu dominio (api.tudominio.com) a este servicio en el puerto 80
+
+  # ---------------------------------------------------------------------------
+  # MÓDULO B — n8n (Orquestador IA)
+  # ---------------------------------------------------------------------------
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: aiwrapper_n8n
+    restart: unless-stopped
+    environment:
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: postgres
+      DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_DATABASE: ${POSTGRES_DB}
+      DB_POSTGRESDB_USER: ${POSTGRES_USER}
+      DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD}
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
+      WEBHOOK_URL: https://${N8N_HOST}/
+      OMNIROUTE_API_URL: http://omniroute:20128/v1
+      OMNIROUTE_API_KEY: ${OMNIROUTE_API_KEY}
+      N8N_WEBHOOK_SECRET: ${N8N_WEBHOOK_SECRET}
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./n8n/workflows:/home/node/.n8n/workflows:ro
+    # En Easypanel, vincula tu dominio (n8n.tudominio.com) a este servicio en el puerto 5678
+
+  # ---------------------------------------------------------------------------
+  # MÓDULO C — PostgreSQL + pgvector (Base de Datos)
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: aiwrapper_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/1-schema.sql:ro
+      - ./database/seed.sql:/docker-entrypoint-initdb.d/2-seed.sql:ro
+
+  # ---------------------------------------------------------------------------
+  # MÓDULO D — OmniRoute (AI Gateway Local)
+  # ---------------------------------------------------------------------------
+  omniroute:
+    image: omniroute/omniroute:latest
+    container_name: aiwrapper_omniroute
+    restart: unless-stopped
+    environment:
+      - OMNIROUTE_API_KEY=${OMNIROUTE_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    volumes:
+      - ./omniroute/config.yaml:/app/config.yaml:ro
+
+volumes:
+  postgres_data:
+  n8n_data:

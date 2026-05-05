@@ -1,0 +1,24 @@
+# .gitignore — AI Wrapper Premium
+# =============================================================================
+
+# Variables de entorno (NUNCA al repositorio)
+.env
+.env.local
+.env.production
+
+# Dependencias PHP
+backend/vendor/
+
+# Certificados SSL
+nginx/certs/
+
+# Logs
+*.log
+backend/storage/logs/
+
+# Datos de Docker (volúmenes locales de desarrollo)
+data/
+
+# Archivos del sistema
+.DS_Store
+Thumbs.db

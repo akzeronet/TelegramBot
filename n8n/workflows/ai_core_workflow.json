@@ -1,0 +1,193 @@
+{
+  "name": "AI Core Workflow (PHP -> n8n -> OmniRoute -> Telegram)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "chat",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "1",
+      "name": "Webhook PHP",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [250, 300],
+      "webhookId": "chat-webhook-id"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT role, content FROM chat_messages WHERE uid = $1 AND archived = FALSE ORDER BY created_at DESC LIMIT 15;",
+        "additionalFields": {
+          "queryParams": "={{ $json.body.uid }}"
+        }
+      },
+      "id": "2",
+      "name": "Get DB Context",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.1,
+      "position": [450, 300],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-cred-id",
+          "name": "Postgres aiwrapper"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OMNIROUTE_API_URL }}/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.OMNIROUTE_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "model",
+              "value": "={{ $('Webhook PHP').item.json.body.model }}"
+            },
+            {
+              "name": "messages",
+              "value": "={{ [{ role: 'system', content: $('Webhook PHP').item.json.body.persona_prompt || 'Eres un asistente útil.' }].concat($json.map(msg => ({ role: msg.role, content: msg.content })).reverse()).concat([{ role: 'user', content: $('Webhook PHP').item.json.body.text }]) }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "3",
+      "name": "OmniRoute AI",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $('Webhook PHP').item.json.body.bot_id ? $env.TELEGRAM_BOT_TOKEN : $env.TELEGRAM_BOT_TOKEN }}/sendMessage",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "chat_id",
+              "value": "={{ $('Webhook PHP').item.json.body.chat_id }}"
+            },
+            {
+              "name": "text",
+              "value": "={{ $json.choices[0].message.content }}"
+            },
+            {
+              "name": "parse_mode",
+              "value": "Markdown"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "4",
+      "name": "Send Telegram",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [850, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://php:80/internal/close",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-N8N-Secret",
+              "value": "={{ $env.N8N_WEBHOOK_SECRET }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "uid",
+              "value": "={{ $('Webhook PHP').item.json.body.uid }}"
+            },
+            {
+              "name": "content",
+              "value": "={{ $('OmniRoute AI').item.json.choices[0].message.content }}"
+            },
+            {
+              "name": "tokens_used",
+              "value": "={{ $('OmniRoute AI').item.json.usage.total_tokens }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "5",
+      "name": "Close PHP",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1050, 300]
+    }
+  ],
+  "connections": {
+    "Webhook PHP": {
+      "main": [
+        [
+          {
+            "node": "Get DB Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get DB Context": {
+      "main": [
+        [
+          {
+            "node": "OmniRoute AI",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OmniRoute AI": {
+      "main": [
+        [
+          {
+            "node": "Send Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Telegram": {
+      "main": [
+        [
+          {
+            "node": "Close PHP",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
