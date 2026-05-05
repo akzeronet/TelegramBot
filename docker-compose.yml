@@ -1,174 +1,51 @@
 version: "3.9"
 
-# =============================================================================
-# AI Wrapper Premium — Docker Compose
-# Módulo A: PHP Slim (backend)
-# Módulo B: n8n (orquestador IA)
-# Módulo C: PostgreSQL + pgvector (almacén)
-# Módulo D: OmniRoute (proxy IA local)
-#            → n8n llama internamente a http://omniroute:20128/v1
-#            → Compatible con spec OpenAI. 160+ proveedores, fallbacks automáticos.
-# Nginx: Reverse Proxy SSL (único punto de entrada público)
-# =============================================================================
+services:
+  # --- BACKEND BOT ---
+  bot:
+    build: 
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: always
+    environment:
+      DB_HOST: postgres
+      DB_NAME: tbot_db
+      DB_USER: admin
+      DB_PASS: admin123
+      MASTER_KEY: default_master_key_32_chars_long_!!
+      JWT_SECRET: default_jwt_secret_pulse_2026
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN} # Única variable obligatoria
+      APP_DOMAIN: ${APP_DOMAIN}
+      N8N_WEBHOOK_URL: http://n8n:5678/webhook/chat
+    depends_on:
+      - postgres
 
-networks:
-  internal:
-    driver: bridge
-    # Red interna: PHP y n8n se comunican aquí.
-  public:
-    driver: bridge
-    # Red pública: solo Nginx está aquí + conectado a internal.
+  # --- BASE DE DATOS ---
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: always
+    environment:
+      POSTGRES_DB: tbot_db
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: admin123
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/init.sql
+
+  # --- CEREBRO IA (n8n) ---
+  n8n:
+    image: n8nio/n8n:latest
+    restart: always
+    environment:
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: postgres
+      DB_POSTGRESDB_DATABASE: tbot_db
+      DB_POSTGRESDB_USER: admin
+      DB_POSTGRESDB_PASSWORD: admin123
+      N8N_WEBHOOK_SECRET: default_n8n_secret
+    volumes:
+      - n8n_data:/home/node/.n8n
 
 volumes:
   postgres_data:
   n8n_data:
-  nginx_certs:
-  cold_storage:   # Simula S3 en Fase 1. Migrar a S3 real en Fase 2.
-
-services:
-
-  # ---------------------------------------------------------------------------
-  # MÓDULO D — OmniRoute (AI Gateway Local)
-  # ---------------------------------------------------------------------------
-  omniroute:
-    image: omniroute/omniroute:latest
-    container_name: aiwrapper_omniroute
-    restart: unless-stopped
-    volumes:
-      - ./omniroute/config.yaml:/app/config.yaml:ro
-    networks:
-      - internal
-    # El puerto interno es 20128, no lo exponemos al público.
-
-  # ---------------------------------------------------------------------------
-  # MÓDULO C — PostgreSQL + pgvector
-  # ---------------------------------------------------------------------------
-  postgres:
-    image: pgvector/pgvector:pg16
-    container_name: aiwrapper_postgres
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./database/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
-      - ./database/seed.sql:/docker-entrypoint-initdb.d/02_seed.sql:ro
-    networks:
-      - internal
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    # Puerto NO expuesto al host intencionalmente.
-    # Solo accesible desde la red Docker interna.
-
-  # MÓDULO D — OpenRouter (Proxy IA externo)
-  # Sin contenedor. n8n llama a https://openrouter.ai/api/v1 directamente.
-  # Compatible con la spec de OpenAI → el nodo HTTP de n8n lo consume sin cambios.
-  # ---------------------------------------------------------------------------
-  # MÓDULO B — n8n (Orquestador IA)
-  # Maneja: Context Manager, RAG, Prompt Assembler, llamadas a LiteLLM.
-  # ---------------------------------------------------------------------------
-  n8n:
-    image: n8nio/n8n:latest
-    container_name: aiwrapper_n8n
-    restart: unless-stopped
-    environment:
-      DB_TYPE: postgresdb
-      DB_POSTGRESDB_HOST: postgres
-      DB_POSTGRESDB_PORT: 5432
-      DB_POSTGRESDB_DATABASE: ${POSTGRES_DB}
-      DB_POSTGRESDB_USER: ${POSTGRES_USER}
-      DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD}
-      N8N_BASIC_AUTH_ACTIVE: "true"
-      N8N_BASIC_AUTH_USER: ${N8N_USER}
-      N8N_BASIC_AUTH_PASSWORD: ${N8N_PASSWORD}
-      N8N_HOST: ${N8N_HOST}
-      N8N_PORT: 5678
-      N8N_PROTOCOL: https
-      WEBHOOK_URL: https://${N8N_HOST}/
-      GENERIC_TIMEZONE: ${TIMEZONE}
-      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
-      # Módulo D: OmniRoute — URL local dentro de la red Docker
-      OMNIROUTE_API_URL: http://omniroute:20128/v1
-      OMNIROUTE_API_KEY: ${OMNIROUTE_API_KEY}
-    volumes:
-      - n8n_data:/home/node/.n8n
-      - ./n8n/workflows:/home/node/.n8n/workflows:ro
-    networks:
-      - internal
-    depends_on:
-      postgres:
-        condition: service_healthy
-    # Puerto 5678 solo en red interna. Nginx hace proxy hacia él.
-
-  # ---------------------------------------------------------------------------
-  # MÓDULO A — PHP Slim (Backend Core)
-  # Responsable: Validación, Seguridad, Pagos, Quota Controller, Feature Dispatcher.
-  # Es el PRIMERO en recibir el mensaje. Nginx lo expone públicamente.
-  # ---------------------------------------------------------------------------
-  php:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    container_name: aiwrapper_php
-    restart: unless-stopped
-    environment:
-      # Base de datos
-      DB_HOST: postgres
-      DB_PORT: 5432
-      DB_NAME: ${POSTGRES_DB}
-      DB_USER: ${POSTGRES_USER}
-      DB_PASS: ${POSTGRES_PASSWORD}
-      # Seguridad
-      MASTER_KEY: ${MASTER_KEY}           # Clave AES-256 para cifrar bot_tokens
-      JWT_SECRET: ${JWT_SECRET}
-      APP_ENV: ${APP_ENV:-production}
-      # Telegram
-      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}   # Bot maestro
-      TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET}
-      # Pagos
-      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY}
-      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET}
-      # n8n
-      N8N_WEBHOOK_URL: http://n8n:5678/webhook/message
-      N8N_WEBHOOK_SECRET: ${N8N_WEBHOOK_SECRET}
-      # Almacenamiento frío (Fase 1: local, Fase 2: S3)
-      COLD_STORAGE_PATH: /var/cold_storage
-    volumes:
-      - ./backend:/var/www/html
-      - cold_storage:/var/cold_storage
-    networks:
-      - internal
-    depends_on:
-      postgres:
-        condition: service_healthy
-      n8n:
-        condition: service_started
-
-  # ---------------------------------------------------------------------------
-  # Nginx — Reverse Proxy (único servicio con puertos públicos)
-  # Rutas:
-  #   /webhook/...  → PHP (entrada de mensajes de Telegram)
-  #   /n8n/         → n8n (acceso al panel de administración)
-  #   /             → PHP (API REST para Web App futura)
-  # ---------------------------------------------------------------------------
-  nginx:
-    image: nginx:alpine
-    container_name: aiwrapper_nginx
-    restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
-      - nginx_certs:/etc/nginx/certs
-    networks:
-      - internal
-      - public
-    depends_on:
-      - php
-      - n8n
