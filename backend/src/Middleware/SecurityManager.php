@@ -16,9 +16,6 @@ use Slim\Psr7\Response;
  *
  * Valida la cadena de seguridad completa por cada request:
  *   bot_token (URL) → uid (dueño del bot) → sender_id (platform_id vinculado)
- *
- * Para el bot maestro: solo valida que el sender exista en user_identities.
- * Para bots personales: valida además que el sender sea EXACTAMENTE el dueño.
  */
 class SecurityManager implements MiddlewareInterface
 {
@@ -33,7 +30,6 @@ class SecurityManager implements MiddlewareInterface
     ): ResponseInterface {
 
         // --- 1. Validar secreto de Telegram ---
-        // Telegram firma cada webhook con el header X-Telegram-Bot-Api-Secret-Token
         $incomingSecret = $request->getHeaderLine('X-Telegram-Bot-Api-Secret-Token');
         if (!hash_equals($_ENV['TELEGRAM_WEBHOOK_SECRET'], $incomingSecret)) {
             return $this->deny($request, 401, 'Unauthorized: invalid webhook secret');
@@ -44,7 +40,6 @@ class SecurityManager implements MiddlewareInterface
         $update = $body['message'] ?? $body['callback_query']['message'] ?? null;
 
         if (!$update) {
-            // Update sin mensaje (ej. channel_post, edited_message) — ignorar silenciosamente
             return $this->ok();
         }
 
@@ -67,16 +62,13 @@ class SecurityManager implements MiddlewareInterface
                 return $this->deny($request, 403, 'Bot not found or inactive');
             }
 
-            // *** BOT-USER LOCK ***
-            // El sender DEBE ser exactamente el dueño registrado del bot.
-            // Cualquier otro usuario recibe "Acceso Denegado" — NO consume tokens.
             if ($senderId !== $bot['owner_platform_id']) {
                 $this->telegram->sendMessage(
                     botToken: $this->db->getBotToken((int) $botId),
                     chatId:   $chatId,
                     text:     $this->getAccessDeniedMessage($request),
                 );
-                return $this->ok(); // Retorna 200 a Telegram (no reintentos)
+                return $this->ok();
             }
 
             $uid = $bot['uid'];
@@ -89,7 +81,6 @@ class SecurityManager implements MiddlewareInterface
             );
 
             if (!$identity) {
-                // Nuevo usuario — registrar y enviar onboarding
                 $uid = $this->db->createUser($senderId);
             } else {
                 $uid = $identity['uid'];
@@ -110,7 +101,6 @@ class SecurityManager implements MiddlewareInterface
 
         // --- 6. Verificar suscripción activa e inactividad ---
         if ($user['subscription_status'] === 'inactive' || $user['subscription_status'] === 'expired') {
-            // Permitir solo comandos básicos (start, subscribe, history, delete)
             $text = trim($update['text'] ?? '');
             $isBasicCommand = preg_match('/^\/(start|subscribe|plan|history|delete_data|export)/i', $text);
             $isCallback = isset($body['callback_query']);
@@ -136,8 +126,6 @@ class SecurityManager implements MiddlewareInterface
         return $handler->handle($request);
     }
 
-    // -------------------------------------------------------------------------
-
     private function deny(
         ServerRequestInterface $request,
         int $status,
@@ -157,7 +145,6 @@ class SecurityManager implements MiddlewareInterface
 
     private function getAccessDeniedMessage(ServerRequestInterface $request): string
     {
-        // El bot personal no tiene contexto de idioma del intruso — usar inglés/español neutro
         return "⛔ Acceso denegado. Este bot es privado.\n\nAccess denied. This is a private bot.";
     }
 
@@ -166,15 +153,6 @@ class SecurityManager implements MiddlewareInterface
         return match ($language) {
             'en' => "🔒 *Account Inactive*\n\nYour subscription has expired. Access to AI chat and personal bots is disabled.\n\nYou can still:\n• /subscribe to reactivate.\n• /export to download your data.\n• /delete_data to wipe your history.",
             default => "🔒 *Cuenta Inactiva*\n\nTu suscripción ha vencido. El acceso al chat de IA y tus bots personales está desactivado.\n\nTodavía puedes:\n• /subscribe para reactivar.\n• /export para descargar tus datos.\n• /delete_data para borrar tu historial.",
-        };
-    }
-
-    private function getExpiredMessage(string $language): string
-    {
-        return match ($language) {
-            'en' => "⚠️ Your subscription has expired. Renew at /subscribe to continue.",
-            'pt' => "⚠️ Sua assinatura expirou. Renove em /subscribe para continuar.",
-            default => "⚠️ Tu suscripción ha vencido. Renueva con /subscribe para continuar.",
         };
     }
 }

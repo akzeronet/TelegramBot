@@ -39,7 +39,7 @@ class PaymentController
         $endpointSecret = $_ENV['STRIPE_WEBHOOK_SECRET'];
 
         try {
-            $event = Webhook::constructEvent($payload, $sigHeader, $endpointSecret);
+            $event = \Stripe\Webhook::constructEvent($payload, $sigHeader, $endpointSecret);
         } catch (\UnexpectedValueException $e) {
             return $this->error($response, 'Invalid payload', 400);
         } catch (SignatureVerificationException $e) {
@@ -72,10 +72,10 @@ class PaymentController
     }
 
     // -------------------------------------------------------------------------
-    // Lógica Interna
+    // Lógica Interna (Pública para ser reutilizada)
     // -------------------------------------------------------------------------
 
-    private function activateSubscription(string $uid, string $planType): void
+    public function activateSubscription(string $uid, string $planType): void
     {
         // 1. Actualizar usuario en DB
         $this->db->execute(

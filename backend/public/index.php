@@ -37,7 +37,7 @@ AppFactory::setContainer($container);
 $app = AppFactory::create();
 
 // --- Middlewares globales ---
-$app->addBodyParsingMiddleware();   // Parsea JSON/form automáticamente
+$app->addBodyParsingMiddleware();
 $app->addRoutingMiddleware();
 
 $errorMiddleware = $app->addErrorMiddleware(
@@ -48,54 +48,27 @@ $errorMiddleware = $app->addErrorMiddleware(
 
 // --- Rutas ---
 
-/**
- * Bot Maestro: webhook único en /webhook/master
- * Atiende a usuarios del Plan Estándar y mensajes del bot principal.
- * Middleware chain (ejecuta de abajo hacia arriba):
- *   SecurityManager → QuotaController → FeatureDispatcher → WebhookController
- */
 $app->post('/webhook/master', [WebhookController::class, 'handleMaster'])
     ->add(FeatureDispatcher::class)
     ->add(QuotaController::class)
     ->add(SecurityManager::class);
 
-/**
- * Bots Personales: webhook dinámico en /webhook/bot/{bot_id}
- * Cada usuario del Plan Premium tiene su propio bot_id registrado.
- * El SecurityManager valida que sender_id == dueño del bot.
- */
 $app->post('/webhook/bot/{bot_id}', [WebhookController::class, 'handlePersonalBot'])
     ->add(FeatureDispatcher::class)
     ->add(QuotaController::class)
     ->add(SecurityManager::class);
 
-/**
- * Redirección de short links: GET /s/{code}
- * PHP busca el código en short_links, incrementa clicks y redirige.
- * Ejemplo: https://tudominio.com/s/aB3xY7k → URL original
- */
 $app->get('/s/{code}', [ShortLinkController::class, 'redirect']);
 
-/**
- * Pagos: Webhook de Stripe y retorno
- */
 $app->post('/payment/webhook', [PaymentController::class, 'handleWebhook']);
 $app->get('/payment/success', [PaymentController::class, 'handleSuccess']);
 $app->get('/checkout', [CheckoutController::class, 'renderCheckout']);
 
-/**
- * Webhook de cierre desde n8n:
- * Registra tokens consumidos y guarda la respuesta de la IA en DB.
- */
 $app->post('/internal/close', [WebhookController::class, 'handleClose']);
 
-/**
- * Healthcheck para Docker y monitoreo externo.
- */
 $app->get('/health', function ($request, $response) {
     $response->getBody()->write(json_encode(['status' => 'ok', 'ts' => time()]));
     return $response->withHeader('Content-Type', 'application/json');
 });
 
 $app->run();
-

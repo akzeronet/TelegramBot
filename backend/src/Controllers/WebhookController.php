@@ -20,27 +20,27 @@ class WebhookController
         private readonly N8nService      $n8n,
         private readonly TelegramService $telegram,
         private readonly MenuController  $menu,
-        private readonly PaymentController $payments, // Inyectamos el controlador de pagos para reutilizar activación
+        private readonly PaymentController $payments,
     ) {}
 
     public function handleMaster(
         ServerRequestInterface $request,
-        ResponseInterface      $response,
+        ResponseInterface      $response
     ): ResponseInterface {
-        return $this->processMessage($request, $response, botId: null);
+        return $this->processMessage($request, $response, null);
     }
 
     public function handlePersonalBot(
         ServerRequestInterface $request,
         ResponseInterface      $response,
-        array                  $args,
+        array                  $args
     ): ResponseInterface {
-        return $this->processMessage($request, $response, botId: (int) $args['bot_id']);
+        return $this->processMessage($request, $response, (int) $args['bot_id']);
     }
 
     public function handleClose(
         ServerRequestInterface $request,
-        ResponseInterface      $response,
+        ResponseInterface      $response
     ): ResponseInterface {
         $secret = $request->getHeaderLine('X-N8N-Secret');
         if (!hash_equals($_ENV['N8N_WEBHOOK_SECRET'], $secret)) {
@@ -71,7 +71,7 @@ class WebhookController
     private function processMessage(
         ServerRequestInterface $request,
         ResponseInterface      $response,
-        ?int                   $botId,
+        ?int                   $botId
     ): ResponseInterface {
 
         $user       = $request->getAttribute('user');
@@ -85,7 +85,8 @@ class WebhookController
             : $_ENV['TELEGRAM_BOT_TOKEN'];
 
         // --- 1. Manejar Pre-Checkout Query (Validación de Estrellas) ---
-        $preCheckout = $request->getParsedBody()['pre_checkout_query'] ?? null;
+        $body = (array)$request->getParsedBody();
+        $preCheckout = $body['pre_checkout_query'] ?? null;
         if ($preCheckout) {
             $this->telegram->answerPreCheckoutQuery($botToken, $preCheckout['id'], true);
             $response->getBody()->write('OK');
@@ -95,13 +96,12 @@ class WebhookController
         // --- 2. Manejar Pago Exitoso (Confirmation) ---
         $successPayment = $update['successful_payment'] ?? null;
         if ($successPayment) {
-            $payload  = $successPayment['invoice_payload']; // "pay_premium_UID"
+            $payload  = $successPayment['invoice_payload'];
             $parts    = explode('_', $payload);
             $planType = $parts[1] ?? 'premium';
             $uid      = $parts[2] ?? null;
 
             if ($uid) {
-                // Reutilizamos la lógica de activación que ya tenemos
                 $this->payments->activateSubscription($uid, $planType);
             }
 
@@ -110,34 +110,31 @@ class WebhookController
         }
 
         // --- 3. Manejar Clicks en Botones (Callback Query) ---
-        $callbackData = $request->getParsedBody()['callback_query']['data'] ?? null;
+        $callbackData = $body['callback_query']['data'] ?? null;
         if ($callbackData) {
             return $this->menu->handleCallback($callbackData, $user, $chatId, $botToken);
         }
 
         $text = trim($update['text'] ?? '');
 
-        // --- 4. Manejar Comandos de Menú (/start, /subscribe, /settings, /persona) ---
+        // --- 4. Manejar Comandos de Menú ---
         if (str_starts_with($text, '/')) {
             $parts   = explode(' ', $text, 2);
             $command = $parts[0];
             $args    = $parts[1] ?? '';
             
             $handled = $this->menu->handleCommand($command, $user, $chatId, $botToken, $args);
-            
-            // Si el MenuController respondió algo (200), terminamos aquí
             if ($handled->getStatusCode() === 200 && (string)$handled->getBody() !== 'OK') {
                 return $handled;
             }
         }
 
-        // Ignorar mensajes vacíos si no es callback
         if ($text === '') {
             $response->getBody()->write('OK');
             return $response;
         }
 
-        // --- 3. Flujo normal de IA ---
+        // --- 5. Flujo normal de IA ---
         $this->db->execute(
             "INSERT INTO chat_messages (uid, role, content) VALUES ($1, 'user', $2)",
             [$user['uid'], $text],
