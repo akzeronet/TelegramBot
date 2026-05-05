@@ -65,18 +65,6 @@ services:
       - ./database/schema.sql:/docker-entrypoint-initdb.d/1-schema.sql:ro
       - ./database/seed.sql:/docker-entrypoint-initdb.d/2-seed.sql:ro
 
-  # ---------------------------------------------------------------------------
-  # MÓDULO D — OmniRoute (AI Gateway Local)
-  # ---------------------------------------------------------------------------
-  omniroute:
-    image: omniroute/omniroute:latest
-    restart: unless-stopped
-    environment:
-      - OMNIROUTE_API_KEY=${OMNIROUTE_API_KEY}
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-    volumes:
-      - ./omniroute/config.yaml:/app/config.yaml:ro
 
 volumes:
   postgres_data:
