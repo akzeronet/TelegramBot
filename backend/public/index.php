@@ -15,11 +15,15 @@ use Dotenv\Dotenv;
 
 require __DIR__ . '/../vendor/autoload.php';
 
-// --- Cargar variables de entorno ---
+// --- Instanciar Dotenv ---
 $dotenv = Dotenv::createImmutable(__DIR__ . '/..');
-$dotenv->load();
 
-// --- Validar variables críticas de entorno ---
+// --- Cargar archivo .env solo si existe (Local) ---
+if (file_exists(__DIR__ . '/../.env')) {
+    $dotenv->load();
+}
+
+// --- Validar variables críticas (Estén en .env o en el Sistema) ---
 $dotenv->required([
     'DB_HOST', 'DB_NAME', 'DB_USER', 'DB_PASS',
     'MASTER_KEY', 'JWT_SECRET',
@@ -41,7 +45,7 @@ $app->addBodyParsingMiddleware();
 $app->addRoutingMiddleware();
 
 $errorMiddleware = $app->addErrorMiddleware(
-    displayErrorDetails: $_ENV['APP_ENV'] === 'development',
+    displayErrorDetails: ($_ENV['APP_ENV'] ?? 'production') === 'development',
     logErrors: true,
     logErrorDetails: true,
 );
