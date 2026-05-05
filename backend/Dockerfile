@@ -1,6 +1,7 @@
-FROM php:8.2-fpm-alpine
+# 1. Usamos una imagen ligera de PHP 8.2
+FROM php:8.2-alpine
 
-# Instalar dependencias del sistema + extensiones PHP
+# 2. Instalar dependencias del sistema y extensiones necesarias para Postgres y el sistema
 RUN apk add --no-cache \
     curl \
     libpq-dev \
@@ -9,21 +10,24 @@ RUN apk add --no-cache \
     unzip \
     && docker-php-ext-install pdo pdo_pgsql pgsql zip
 
-# Instalar Composer
+# 3. Instalar Composer (para gestionar las librerías)
 COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
 
-# Directorio de trabajo
-WORKDIR /var/www/html
+# 4. Configurar el directorio de trabajo
+WORKDIR /app
 
-# Copiar archivos del proyecto
+# 5. Copiar los archivos del proyecto (desde la carpeta backend)
 COPY . .
 
-# Instalar dependencias PHP
+# 6. Instalar dependencias de producción
 RUN composer install --no-dev --optimize-autoloader
 
-# Permisos de escritura para logs
-RUN chown -R www-data:www-data /var/www/html/storage 2>/dev/null || true
+# 7. Crear carpetas necesarias y dar permisos (opcional según el uso de logs)
+RUN mkdir -p storage && chmod -R 777 storage
 
+# 8. Exponer el puerto 80 para Easypanel
 EXPOSE 80
 
+# 9. Iniciar el servidor web incorporado de PHP sirviendo la carpeta 'public'
+# Esto es ideal para microservicios y bots en Easypanel
 CMD ["php", "-S", "0.0.0.0:80", "-t", "public"]
