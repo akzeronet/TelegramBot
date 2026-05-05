@@ -24,6 +24,6 @@ RUN composer install --no-dev --optimize-autoloader
 # Permisos de escritura para logs
 RUN chown -R www-data:www-data /var/www/html/storage 2>/dev/null || true
 
-EXPOSE 9000
+EXPOSE 80
 
-CMD ["php-fpm"]
+CMD ["php", "-S", "0.0.0.0:80", "-t", "public"]
