@@ -1,5 +1,4 @@
-version: "3.9"
-
+# AI Wrapper All-in-One
 services:
   # --- BACKEND BOT ---
   bot:
