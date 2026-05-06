@@ -1,77 +1,64 @@
 <?php
 declare(strict_types=1);
 
+use App\Services\DatabaseService;
+use App\Services\TelegramService;
 use App\Middleware\SecurityManager;
-use App\Middleware\QuotaController;
-use App\Middleware\FeatureDispatcher;
-use App\Controllers\WebhookController;
-use App\Controllers\ShortLinkController;
-use App\Controllers\MenuController;
-use App\Controllers\PaymentController;
-use App\Controllers\CheckoutController;
-use DI\ContainerBuilder;
 use Slim\Factory\AppFactory;
 use Dotenv\Dotenv;
 
 require __DIR__ . '/../vendor/autoload.php';
 
-// --- Instanciar Dotenv ---
-$dotenv = Dotenv::createImmutable(__DIR__ . '/..');
-
-// --- Cargar archivo .env solo si existe (Local) ---
+// 1. Cargar Entorno
 if (file_exists(__DIR__ . '/../.env')) {
-    $dotenv->load();
+    Dotenv::createImmutable(__DIR__ . '/..')->load();
 }
 
-// --- Validar variables críticas (Estén en .env o en el Sistema) ---
-$dotenv->required([
-    'DB_HOST', 'DB_NAME', 'DB_USER', 'DB_PASS',
-    'MASTER_KEY', 'JWT_SECRET',
-    'TELEGRAM_BOT_TOKEN', 'TELEGRAM_WEBHOOK_SECRET',
-    'N8N_WEBHOOK_URL', 'N8N_WEBHOOK_SECRET',
-    'APP_DOMAIN',
-]);
-
-// --- Contenedor de Inyección de Dependencias ---
-$containerBuilder = new ContainerBuilder();
-$containerBuilder->addDefinitions(__DIR__ . '/../src/dependencies.php');
-$container = $containerBuilder->build();
-
-AppFactory::setContainer($container);
 $app = AppFactory::create();
-
-// --- Middlewares globales ---
 $app->addBodyParsingMiddleware();
-$app->addRoutingMiddleware();
 
-$errorMiddleware = $app->addErrorMiddleware(
-    displayErrorDetails: ($_ENV['APP_ENV'] ?? 'production') === 'development',
-    logErrors: true,
-    logErrorDetails: true,
-);
+// 2. Instanciar Servicios (Directo y simple)
+$db = new DatabaseService();
+$telegram = new TelegramService();
 
-// --- Rutas ---
+// 3. Webhook Omnichannel (Master y Personales)
+$app->post('/webhook/{type}', function ($request, $response, $args) use ($db, $telegram) {
+    $data = (array)$request->getParsedBody();
+    $update = $data['message'] ?? $data['callback_query']['message'] ?? null;
+    
+    if (!$update) return $response->withStatus(200);
 
-$app->post('/webhook/master', [WebhookController::class, 'handleMaster'])
-    ->add(FeatureDispatcher::class)
-    ->add(QuotaController::class)
-    ->add(SecurityManager::class);
+    // Seguridad: Token de Webhook
+    if ($request->getHeaderLine('X-Telegram-Bot-Api-Secret-Token') !== $_ENV['TELEGRAM_WEBHOOK_SECRET']) {
+        return $response->withStatus(401);
+    }
 
-$app->post('/webhook/bot/{bot_id}', [WebhookController::class, 'handlePersonalBot'])
-    ->add(FeatureDispatcher::class)
-    ->add(QuotaController::class)
-    ->add(SecurityManager::class);
+    $senderId = (string)($update['from']['id'] ?? '');
+    $user = $db->getOrCreateUser($senderId);
 
-$app->get('/s/{code}', [ShortLinkController::class, 'redirect']);
+    // Bloqueo de Inactividad
+    if ($user['status'] === 'inactive') {
+        $telegram->sendMessage($_ENV['TELEGRAM_BOT_TOKEN'], $senderId, "🔒 Cuenta inactiva. Por favor, renueva tu suscripción.");
+        return $response->withStatus(200);
+    }
 
-$app->post('/payment/webhook', [PaymentController::class, 'handleWebhook']);
-$app->get('/payment/success', [PaymentController::class, 'handleSuccess']);
-$app->get('/checkout', [CheckoutController::class, 'renderCheckout']);
+    // 4. Enviar a n8n Cloud (El cerebro)
+    $client = new \GuzzleHttp\Client();
+    $client->post($_ENV['N8N_WEBHOOK_URL'], [
+        'json' => [
+            'user' => $user,
+            'telegram_data' => $data,
+            'bot_type' => $args['type']
+        ]
+    ]);
 
-$app->post('/internal/close', [WebhookController::class, 'handleClose']);
+    $response->getBody()->write("OK");
+    return $response;
+});
 
+// Health Check
 $app->get('/health', function ($request, $response) {
-    $response->getBody()->write(json_encode(['status' => 'ok', 'ts' => time()]));
+    $response->getBody()->write(json_encode(['status' => 'online', 'db' => 'sqlite_wal']));
     return $response->withHeader('Content-Type', 'application/json');
 });
 
